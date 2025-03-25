@@ -37,11 +37,20 @@ Servo servoRight;
 
 // ==== Global state ====
 
+static uint32_t lastPpmCounter = 0;
+static uint32_t lastPpmCheckTime = 0;
 
+bool ppmSignalAlive = true;
 
 // ==== Setup ====
 void setup() {
   Serial.begin(115200);
+  Serial.println("");
+  delay(10);
+  Serial.println("");
+  delay(10);
+  Serial.println("");
+  delay(10);
   Wire.begin(COMPASS_I2C_SDA, COMPASS_I2C_SCL);  // SDA, SCL for compass
   Serial.println("Scanning I2C bus...");
 
@@ -77,8 +86,6 @@ void setup() {
   servoLeft.attach(RUDDER_LEFT, 1000, 2000);
   servoRight.attach(RUDDER_RIGHT, 1000, 2000);
   delay(1000);
-
-
   setRudderTrim(0, 0);
   setRudderAngle(0);
   initEncoder();
@@ -87,30 +94,15 @@ void setup() {
   delay(1);
   updateEncoder();
   setEncoderMode(MODE_RUDDER);
-  setRudderAngles(25, -25);
-  delay(100);
-  setRudderAngles(-25, 25);
-  delay(100);
+  setRudderAngles(45, -45);
+  delay(1000);
+  setRudderAngles(-45, 45);
+  delay(1000);
   setRudderAngle(0);
+  setRudderAngles(-0, 0);
+
   setupFlySkyPPM();
   delay(10);
-
-  // ==== GPS & Compass Init ====
-
-  // while (!compass.begin()) {
-  //   Serial.println("Compass not found");
-  //   delay(1000);
-  // }
-  // compass.setRange(QMC5883_RANGE_2GA);
-  // compass.setMeasurementMode(QMC5883_CONTINOUS);
-  // compass.setDataRate(QMC5883_DATARATE_50HZ);
-  // compass.setSamples(QMC5883_SAMPLES_8);
-  // Vector norm = compass.readNormalize();
-  // Serial.print("X: "); Serial.print(norm.XAxis);
-  // Serial.print(" Y: "); Serial.print(norm.YAxis);
-  // Serial.print(" Z: "); Serial.println(norm.ZAxis);
-  // Serial.println("GPS and Compass Ready.");
-  delay(100);
 }
 
 void setMotorPower(int percent) {
@@ -122,15 +114,37 @@ void setMotorPower(int percent) {
 void loop() {
   updateEncoder();
 
-  uint16_t ch1 = getFlySkyChannel(0);  // rudder
-  uint16_t ch2 = getFlySkyChannel(2);  // throttle
-  // Преобразуем в понятные значения
-  int rudder = map(ch1, 1000, 2000, -60, 60);   // управление рулём
-  int throttle = map(ch2, 1000, 2000, 0, 100);  // мощность мотора (0-100%)
 
-  // Применяем
-  setRudderAngle(rudder);
-  setMotorPower(throttle);
+  if (millis() - lastPpmCheckTime >= 500) {
+    lastPpmCheckTime = millis();
+
+    if (ppmCounter == lastPpmCounter) {
+      ppmSignalAlive = false;  // Нет новых сигналов
+    } else {
+      ppmSignalAlive = true;  // Сигналы идут
+      lastPpmCounter = ppmCounter;
+    }
+  }
+  //Serial.printf("PPM Alive: %s (Counter: %lu)\n", ppmSignalAlive ? "YES" : "NO", ppmCounter);
+
+  if (ppmSignalAlive) {
+    uint16_t ch1 = getFlySkyChannel(0);
+    uint16_t ch3 = getFlySkyChannel(2);
+    //uint16_t ch6 = getFlySkyChannel(5);     // CH6 = индекс 5
+    if (ch3> 999) {
+
+      int rudder = map(ch1, 1000, 2000, -60, 60);
+      int throttle = map(ch3, 1000, 2000, 0, 100);
+
+      setRudderAngle(rudder);
+      setMotorPower(throttle);
+      //Serial.println("🛑 Failsafe active — transmitter disconnected.");
+    }
+  } else {
+    // Serial.println("🚫 PPM signal lost — STOPPING");
+    // setRudderAngle(0);
+    // setMotorPower(0);
+  }
   // static uint32_t lastCounter = 0;
   // if (ppmCounter != lastCounter) {
   //   Serial.print("PPM ISR Triggered: ");
@@ -138,18 +152,17 @@ void loop() {
   //   lastCounter = ppmCounter;
   // }
 
-  delay(5);
+  delay(1);
   static unsigned long lastStatusTime = 0;
-static unsigned long lastHeadingTime = 0;
+  static unsigned long lastHeadingTime = 0;
 
   // ==== Read GPS ====
-  // Показать "сырые" данные от GPS модуля
   while (GPSserial.available()) {
     char c = GPSserial.read();
     if (millis() - lastStatusTime >= 15000) {
-      Serial.write(c);  // покажет NMEA строки
+      Serial.write(c);  //  NMEA
     }
-    gps.encode(c);  // передаём в TinyGPS++
+    gps.encode(c);
   }
 
   // Каждые 15 секунд
@@ -157,74 +170,51 @@ static unsigned long lastHeadingTime = 0;
     lastStatusTime = millis();
 
     if (gps.location.isValid()) {
-      Serial.println("✅ GPS FIX:");
-      Serial.print("Latitude: ");
-      Serial.println(gps.location.lat(), 6);
-      Serial.print("Longitude: ");
-      Serial.println(gps.location.lng(), 6);
+      Serial.printf("✅ GPS FIX: Lat: %.6f, Lon: %.6f\n", gps.location.lat(), gps.location.lng());
+
     } else {
       Serial.println("🔄 Waiting for GPS fix...");
       if (gps.satellites.isValid()) {
-        Serial.print("Satellites in view: ");
-        Serial.println(gps.satellites.value());
+        Serial.printf("Satellites in view: %d\n", gps.satellites.value());
       } else {
-        Serial.println("Satellites info not yet available.");
+        Serial.printf("Satellites info not yet available.\n");
       }
       if (gps.altitude.isValid()) {
-        Serial.print("Altitude: ");
-        Serial.print(gps.altitude.meters());
-        Serial.println(" m");
+        Serial.printf("Altitude: %d\n", gps.altitude.meters());
       }
       if (gps.speed.isValid()) {
-        Serial.print("Speed: ");
-        Serial.print(gps.speed.kmph());
-        Serial.println(" km/h");
+        Serial.printf("Speed: %d  km/h\n", gps.speed.kmph());
       }
     }
-
-    //     // ==== Read Compass ====
-    // sVector_t mag = compass.readRaw();
-    // float heading = atan2(mag.YAxis, mag.XAxis);
-    // if (heading < 0) heading += 2 * PI;
-    // float headingDegrees = heading * 180 / PI;
-    // Serial.print("Heading: ");
-    // Serial.print(headingDegrees);
-    // Serial.println("°");
+    // ==== Read Compass ====
     sensors_event_t event;
     compass.getEvent(&event);
 
-    Serial.print("X: ");
-    Serial.print(event.magnetic.x);
-    Serial.print(" Y: ");
-    Serial.print(event.magnetic.y);
-    Serial.print(" Z: ");
-    Serial.println(event.magnetic.z);
+    Serial.printf("X: %.2f Y: %.2f Z: %.2f\n", event.magnetic.x, event.magnetic.y, event.magnetic.z);
   }
-static float previousHeading = -1;  // начальное значение
+  static float previousHeading = -1;
 
-if (millis() - lastHeadingTime >= 1000) {
-  lastHeadingTime = millis();
+  if (millis() - lastHeadingTime >= 1000) {
+    lastHeadingTime = millis();
 
-  sensors_event_t event;
-  compass.getEvent(&event);
+    sensors_event_t event;
+    compass.getEvent(&event);
 
-  float heading = atan2(event.magnetic.y, event.magnetic.x);
-  if (heading < 0)
-    heading += 2 * PI;
+    float heading = atan2(event.magnetic.y, event.magnetic.x);
+    if (heading < 0)
+      heading += 2 * PI;
 
-  float headingDegrees = heading * 180 / PI;
+    float headingDegrees = heading * 180 / PI;
 
-  // Сравниваем с предыдущим значением (3% порог)
-  if (previousHeading < 0 || abs(headingDegrees - previousHeading) / previousHeading > 0.03) {
-    Serial.print("Heading: ");
-    Serial.print(headingDegrees);
-    Serial.println("°");
+    // Сравниваем с предыдущим значением (3% порог)
+    if (previousHeading < 0 || abs(headingDegrees - previousHeading) / previousHeading > 0.03) {
+      Serial.printf("[DBG] Heading: %.2f°, X: %.2f, Y: %.2f, Z: %.2f, Lat: %.6f, Lon: %.6f\n",
+                    headingDegrees,
+                    event.magnetic.x, event.magnetic.y, event.magnetic.z,
+                    gps.location.lat(), gps.location.lng());
 
-    previousHeading = headingDegrees;
+      previousHeading = headingDegrees;
+    }
   }
-}
-
-
-
-  delay(50);  // Умеренная задержка для обновления GPS/компаса
+  delay(1);
 }
